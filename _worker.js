@@ -294,31 +294,38 @@ function generateLinksFromSource(list, user, workerDomain, disableNonTLS = false
 
         portsToGenerate.forEach(({ port, tls }) => {
             if (tls) {
-                const wsNodeName = `${nodeNameBase}-${port}-WS-TLS`;
-                const wsParams = new URLSearchParams({ 
-                    encryption: 'none', 
-                    security: 'tls', 
-                    sni: workerDomain, 
-                    fp: 'chrome', 
-                    type: 'ws', 
-                    host: workerDomain, 
-                    path: wsPath
+                const grpcNodeName = `${nodeNameBase}-${port}-gRPC-TLS`;
+
+                const grpcParams = new URLSearchParams({ 
+                    encryption: 'none',
+                    security: 'tls',
+                    sni: workerDomain,
+                    fp: 'chrome',
+                    type: 'grpc',
+                    serviceName: wsPath // 关键：path → serviceName
+                    authority: workerDomain
                 });
+
                 if (echConfig) {
-                    wsParams.set('alpn', 'h3,h2,http/1.1');
-                    wsParams.set('ech', echConfig);
+                    grpcParams.set('alpn', 'h2'); // gRPC 必须 h2
+                    grpcParams.set('ech', echConfig);
                 }
-                links.push(`${proto}://${user}@${safeIP}:${port}?${wsParams.toString()}#${encodeURIComponent(wsNodeName)}`);
+
+                // 关键：gRPC 必须连接域名，不能连IP
+                links.push(`${proto}://${user}@${workerDomain}:${port}?${grpcParams.toString()}#${encodeURIComponent(grpcNodeName)}`);
+
             } else {
-                const wsNodeName = `${nodeNameBase}-${port}-WS`;
-                const wsParams = new URLSearchParams({
+                const grpcNodeName = `${nodeNameBase}-${port}-gRPC`;
+
+                const grpcParams = new URLSearchParams({
                     encryption: 'none',
                     security: 'none',
-                    type: 'ws',
-                    host: workerDomain,
-                    path: wsPath
+                    type: 'grpc',
+                    serviceName: wsPath
+                    authority: workerDomain
                 });
-                links.push(`${proto}://${user}@${safeIP}:${port}?${wsParams.toString()}#${encodeURIComponent(wsNodeName)}`);
+
+                links.push(`${proto}://${user}@${workerDomain}:${port}?${grpcParams.toString()}#${encodeURIComponent(grpcNodeName)}`);
             }
         });
     });
