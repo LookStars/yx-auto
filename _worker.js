@@ -1,140 +1,114 @@
 export default {
   async fetch(request) {
-
     const url = new URL(request.url);
 
-    const uuid = url.searchParams.get("uuid") || "YOUR-UUID";
-    const path = url.searchParams.get("path") || "/grpc";
-    const ech = url.searchParams.get("ech");
-    const workerDomain = url.hostname;
+    if (url.pathname === "/") {
+      return new Response(html, {
+        headers: { "content-type": "text/html;charset=utf-8" }
+      });
+    }
 
-    const IP_SOURCE = "https://raw.githubusercontent.com/cmliu/CFcdnVmess2sub/main/ip.txt";
-    const NEW_IP_SOURCE = "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/main/newip.txt";
+    if (url.pathname === "/sub") {
+      return handleSub(url);
+    }
 
-    const [ipText, newIpText] = await Promise.all([
-      fetch(IP_SOURCE).then(r => r.text()),
-      fetch(NEW_IP_SOURCE).then(r => r.text())
-    ]);
-
-    const ipList = parseIPList(ipText);
-    const newIpList = parseNewIPList(newIpText);
-
-    const links1 = generateLinksFromSource(ipList, uuid, workerDomain, false, path, ech);
-    const links2 = generateLinksFromNewIPs(newIpList, uuid, workerDomain, path, ech);
-
-    const allLinks = [...links1, ...links2].join("\n");
-    const base64 = btoa(allLinks);
-
-    return new Response(base64, {
-      headers: { "content-type": "text/plain;charset=utf-8" }
-    });
+    return new Response("Not Found", { status: 404 });
   }
 };
 
 
 
+// ================= UI（恢复原版风格） =================
 
+const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>YX Auto</title>
+<style>
+body{font-family:Arial;background:#0b0f17;color:#fff;text-align:center}
+.box{background:#121826;padding:25px;margin:40px auto;width:520px;border-radius:16px}
+input{width:90%;padding:10px;margin:8px;border-radius:8px;border:none}
+button{padding:12px 30px;border:none;border-radius:10px;background:#4da3ff;color:#fff;font-size:16px}
+a{color:#4da3ff}
+</style>
+</head>
 
+<body>
+<div class="box">
+<h2>YX Auto 订阅生成</h2>
 
-// ========== 解析 IP ==========
-function parseIPList(text) {
-  return text.split("\n").map(line => {
-    const parts = line.split(",");
-    return {
-      ip: parts[0],
-      port: parts[1],
-      isp: parts[2],
-      colo: parts[3]
-    };
-  }).filter(i => i.ip);
+UUID
+<input id="uuid" placeholder="输入UUID">
+
+gRPC路径
+<input id="path" value="/grpc">
+
+ECH（可留空）
+<input id="ech">
+
+<br><br>
+<button onclick="gen()">生成订阅</button>
+
+<p id="out"></p>
+</div>
+
+<script>
+function gen(){
+  const uuid = document.getElementById("uuid").value
+  const path = document.getElementById("path").value
+  const ech = document.getElementById("ech").value
+
+  let url = location.origin + "/sub?uuid="+uuid+"&path="+path
+  if(ech) url += "&ech="+ech
+
+  document.getElementById("out").innerHTML='<a href="'+url+'" target="_blank">'+url+'</a>'
 }
-
-function parseNewIPList(text) {
-  return text.split("\n").map(line => {
-    const parts = line.split(",");
-    return {
-      name: parts[0],
-      ip: parts[1],
-      port: parts[2]
-    };
-  }).filter(i => i.ip);
-}
+</script>
+</body>
+</html>
+`;
 
 
 
+// ================= 订阅生成（gRPC版） =================
 
+async function handleSub(url){
 
-// ========== 核心：生成 gRPC ==========
-function buildGrpcParams(workerDomain, serviceName, ech) {
+  const uuid = url.searchParams.get("uuid");
+  const path = url.searchParams.get("path") || "/grpc";
+  const ech = url.searchParams.get("ech");
+  const workerDomain = url.hostname;
 
-  const params = new URLSearchParams({
-    encryption: "none",
-    security: "tls",
-    type: "grpc",
-    serviceName: serviceName.replace("/", ""),
-    authority: workerDomain,
-    sni: workerDomain,
-    fp: "chrome"
-  });
+  if(!uuid) return new Response("UUID missing");
 
-  if (ech) {
-    params.set("alpn", "h2");
-    params.set("ech", ech);
+  const serviceName = path.replace("/","");
+  const ports=[443,2053,2083,2087,2096,8443];
+
+  // GitHub优选IP（失败自动fallback）
+  let ipList=[];
+  try{
+    const txt = await fetch("https://raw.githubusercontent.com/cmliu/CFcdnVmess2sub/main/ip.txt").then(r=>r.text());
+    ipList = txt.split("\\n").map(l=>l.split(",")[0]).filter(Boolean);
+  }catch{}
+
+  if(ipList.length===0){
+    ipList=["104.16.1.1","172.67.1.1","162.159.1.1","188.114.97.1"];
   }
 
-  return params.toString();
-}
+  function buildParams(){
+    let p=`encryption=none&security=tls&type=grpc&serviceName=${serviceName}&authority=${workerDomain}&sni=${workerDomain}&fp=chrome`;
+    if(ech) p+="&alpn=h2&ech="+ech;
+    return p;
+  }
 
-
-
-
-
-// ========== 原IP库 ==========
-function generateLinksFromSource(list, user, workerDomain, disableNonTLS = false, customPath = '/', echConfig = null) {
-
-  const CF_HTTPS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
-  const links = [];
-
-  list.forEach(item => {
-
-    let nodeNameBase = item.isp ? item.isp.replace(/\s/g, '_') : (item.name || item.domain || item.ip);
-    if (item.colo) nodeNameBase += "-" + item.colo;
-
-    const safeIP = item.ip.includes(':') ? `[${item.ip}]` : item.ip;
-    const ports = item.port ? [item.port] : CF_HTTPS_PORTS;
-
-    ports.forEach(port => {
-
-      const nodeName = `${nodeNameBase}-${port}-gRPC`;
-      const params = buildGrpcParams(workerDomain, customPath, echConfig);
-
-      links.push(
-        `vless://${user}@${safeIP}:${port}?${params}#${encodeURIComponent(nodeName)}`
-      );
+  let links=[];
+  ipList.forEach(ip=>{
+    ports.forEach(port=>{
+      links.push(`vless://${uuid}@${ip}:${port}?${buildParams()}#CF-${ip}-${port}`);
     });
   });
 
-  return links;
-}
-
-
-
-
-
-// ========== newip ==========
-function generateLinksFromNewIPs(list, user, workerDomain, customPath = '/', echConfig = null) {
-
-  const links = [];
-
-  list.forEach(item => {
-
-    const nodeName = `${item.name}-gRPC`;
-    const params = buildGrpcParams(workerDomain, customPath, echConfig);
-
-    links.push(
-      `vless://${user}@${item.ip}:${item.port}?${params}#${encodeURIComponent(nodeName)}`
-    );
-  });
-
-  return links;
+  return new Response(btoa(links.join("\\n")));
 }
